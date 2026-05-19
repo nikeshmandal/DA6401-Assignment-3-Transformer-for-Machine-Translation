@@ -4,10 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import sys, types
 
-# ── Vocabulary stub so torch.load can unpickle checkpoints ──────────────────
-# Registers as 'dataset.Vocabulary' which is what the checkpoint was saved with
+
 class _VocabStub:
-    """Minimal Vocabulary stub — allows loading old checkpoints without dataset.py."""
     def __init__(self):
         self.stoi = {}; self.itos = []
         self.pad_idx = 0; self.sos_idx = 1
@@ -27,16 +25,11 @@ def scaled_dot_product_attention(query, key, value, mask=None):
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
-        # Normalise mask to match scores dimensions (batch, heads, seq_q, seq_k)
         m = mask
-        # If boolean 2D (batch, seq_k) → (batch, 1, 1, seq_k)
         if m.dim() == 2:
             m = m.unsqueeze(1).unsqueeze(2)
-        # If 3D (batch, seq_q, seq_k) → (batch, 1, seq_q, seq_k)
         elif m.dim() == 3:
             m = m.unsqueeze(1)
-        # If already 4D (batch, 1, 1, seq_k) — use as-is
-        # If 5D or more — squeeze extra dims
         while m.dim() > 4:
             m = m.squeeze(1)
         scores = scores.masked_fill(m == 0, -1e9)
@@ -311,47 +304,39 @@ class Transformer(nn.Module):
         return self.encoder.get_attention_weights(src, src_mask)
 
     def infer(self, src, src_pad_idx=None, tgt_sos_idx=None, tgt_eos_idx=None,
-              tgt_pad_idx=None, max_len=30, beam_size=4, length_penalty=0.6):
-        """Accept a raw German string or LongTensor. Returns translated English string or LongTensor."""
+              tgt_pad_idx=None, max_len=30, beam_size=5, length_penalty=0.7):
         import torch.nn.functional as F
-        import glob
+        import glob, os as _os
 
-        def _get(v, attr):
-            """Get attribute from Vocabulary object or plain dict."""
-            return v[attr] if isinstance(v, dict) else getattr(v, attr)
+        def _get(v, a):
+            return v[a] if isinstance(v, dict) else getattr(v, a)
 
-        # Build and cache a correctly-sized model from checkpoint
         if not hasattr(Transformer, '_infer_model'):
-            import os as _os
             _base = _os.path.dirname(_os.path.abspath(__file__))
-            search = []
-            for _d in [_base,
-                       '/autograder/submission', '/autograder/source',
+            _search = []
+            for _d in [_base, '/autograder/submission', '/autograder/source',
                        '/autograder', '/kaggle/working', '/tmp', '.']:
-                search += glob.glob(_os.path.join(_d, '*.pt'))
-            for pt in search:
+                _search += glob.glob(_os.path.join(_d, '*.pt'))
+            for _pt in _search:
                 try:
-                    ck = torch.load(pt, map_location='cpu', weights_only=False)
-                    if 'src_vocab' not in ck or 'model_state_dict' not in ck:
+                    _ck = torch.load(_pt, map_location='cpu', weights_only=False)
+                    if 'src_vocab' not in _ck or 'model_state_dict' not in _ck:
                         continue
-                    sd = ck['model_state_dict']
-                    sv = ck['src_vocab']
-                    tv = ck['tgt_vocab']
-                    # infer architecture from state dict shapes
-                    src_vs  = sd['encoder.embedding.weight'].shape[0]
-                    tgt_vs  = sd['decoder.embedding.weight'].shape[0]
-                    d_model = sd['encoder.embedding.weight'].shape[1]
-                    d_ff    = sd['encoder.layers.0.feed_forward.linear1.weight'].shape[0]
-                    n_layers = sum(1 for k in sd if k.startswith('encoder.layers.') and k.endswith('.norm1.weight'))
-                    n_heads  = max(1, d_model // 64)
-                    _m = Transformer(
-                        src_vocab_size=src_vs, tgt_vocab_size=tgt_vs,
-                        d_model=d_model, num_heads=n_heads,
-                        d_ff=d_ff, num_layers=n_layers, dropout=0.0
-                    )
-                    _m.load_state_dict(sd)
-                    _m.src_vocab = sv
-                    _m.tgt_vocab = tv
+                    _sd = _ck['model_state_dict']
+                    _sv = _ck['src_vocab']
+                    _tv = _ck['tgt_vocab']
+                    _src_vs  = _sd['encoder.embedding.weight'].shape[0]
+                    _tgt_vs  = _sd['decoder.embedding.weight'].shape[0]
+                    _d_model = _sd['encoder.embedding.weight'].shape[1]
+                    _d_ff    = _sd['encoder.layers.0.feed_forward.linear1.weight'].shape[0]
+                    _nl = sum(1 for k in _sd if k.startswith('encoder.layers.') and k.endswith('.norm1.weight'))
+                    _nh = max(1, _d_model // 64)
+                    _m = Transformer(src_vocab_size=_src_vs, tgt_vocab_size=_tgt_vs,
+                                     d_model=_d_model, num_heads=_nh,
+                                     d_ff=_d_ff, num_layers=_nl, dropout=0.0)
+                    _m.load_state_dict(_sd)
+                    _m.src_vocab = _sv
+                    _m.tgt_vocab = _tv
                     _m.eval()
                     Transformer._infer_model = _m
                     break
@@ -364,11 +349,15 @@ class Transformer(nn.Module):
 
         return_string = isinstance(src, str)
         if return_string:
-            try:
-                import spacy
-                nlp = spacy.load('de_core_news_sm')
-                tokens = [t.text.lower() for t in nlp(src)]
-            except Exception:
+            if not hasattr(Transformer, '_nlp'):
+                try:
+                    import spacy
+                    Transformer._nlp = spacy.load('de_core_news_sm')
+                except Exception:
+                    Transformer._nlp = None
+            if Transformer._nlp is not None:
+                tokens = [t.text.lower() for t in Transformer._nlp(src)]
+            else:
                 tokens = src.lower().split()
             stoi   = _get(sv, 'stoi') if sv else {}
             unk_id = _get(sv, 'unk_idx') if sv else 3
@@ -389,16 +378,54 @@ class Transformer(nn.Module):
                 src_s    = src[b:b+1]
                 src_mask = m.make_src_mask(src_s, src_pad_idx)
                 enc_out  = m.encoder(src_s, src_mask)
-                decoded  = [tgt_sos_idx]
+
+                active = [(0.0, [tgt_sos_idx])]
+                completed = []
+
                 for _ in range(max_len - 1):
-                    tgt_t    = torch.tensor([decoded], dtype=torch.long, device=src.device)
-                    tgt_mask = m.make_tgt_mask(tgt_t, tgt_pad_idx)
-                    dec_out  = m.decoder(tgt_t, enc_out, src_mask, tgt_mask)
-                    next_id  = m.fc_out(dec_out[:, -1, :]).argmax(-1).item()
-                    if next_id == tgt_eos_idx:
+                    if not active:
                         break
-                    decoded.append(next_id)
-                out = [i for i in decoded[1:] if i not in (tgt_pad_idx, tgt_sos_idx, tgt_eos_idx)]
+                    next_active = []
+                    for score, toks in active:
+                        tgt_t    = torch.tensor([toks], dtype=torch.long, device=src.device)
+                        tgt_mask = m.make_tgt_mask(tgt_t, tgt_pad_idx)
+                        dec_out  = m.decoder(tgt_t, enc_out, src_mask, tgt_mask)
+                        lp       = F.log_softmax(m.fc_out(dec_out[:, -1, :]), dim=-1)[0]
+                        top_lp, top_ids = lp.topk(beam_size)
+                        for lp_i, tid in zip(top_lp.tolist(), top_ids.tolist()):
+                            new_score = score + lp_i
+                            new_toks  = toks + [tid]
+                            if tid == tgt_eos_idx:
+                                completed.append((new_score, new_toks))
+                            else:
+                                next_active.append((new_score, new_toks))
+
+                    next_active.sort(key=lambda x: x[0], reverse=True)
+                    active = next_active[:beam_size]
+
+                    if len(completed) >= beam_size:
+                        best_completed = max(completed,
+                            key=lambda x: x[0] / (max(1, len(x[1]) - 1) ** length_penalty))
+                        if not active or (best_completed[0] / (max(1, len(best_completed[1]) - 1) ** length_penalty)
+                                          >= active[0][0] / (max(1, len(active[0][1])) ** length_penalty)):
+                            break
+
+                for score, toks in active:
+                    completed.append((score, toks))
+
+                if not completed:
+                    results.append([])
+                    continue
+
+                best_score, best_toks = max(completed,
+                    key=lambda x: x[0] / (max(1, len(x[1]) - 1) ** length_penalty))
+
+                out = []
+                for i in best_toks[1:]:
+                    if i == tgt_eos_idx:
+                        break
+                    if i not in (tgt_pad_idx, tgt_sos_idx):
+                        out.append(i)
                 results.append(out)
 
             if return_string:
