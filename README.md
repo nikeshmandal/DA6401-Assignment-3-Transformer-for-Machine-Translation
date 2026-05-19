@@ -5,6 +5,8 @@
 # Wandb Link:
 https://api.wandb.ai/links/id25m805-iitmaana/y8p456bb
 
+# Github repo link:
+https://github.com/nikeshmandal/DA6401-Assignment-3-Transformer-for-Machine-Translation.git
 
 # DA6401 Assignment 3 — Transformer for Machine Translation (German to English)
 
